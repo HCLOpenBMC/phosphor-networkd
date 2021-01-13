@@ -35,7 +35,8 @@ int main(int argc, char** argv)
     int packageInt{};
     int channelInt{};
     int indexInt{};
-
+    int opcodeInt{};
+	std::cerr << "Testing check ver 1.1\n";
     // Parse out interface argument.
     auto ifIndex = (options)["index"];
     try
@@ -83,6 +84,23 @@ int main(int argc, char** argv)
     if (channelInt < 0)
     {
         channelInt = DEFAULT_VALUE;
+    }
+
+    // Parse out opcode  argument.
+    auto opcode = (options)["cmd"];
+    try
+    {
+        opcodeInt = stoi(opcode, nullptr);
+    }
+    catch (const std::exception& e)
+    {
+        opcodeInt = DEFAULT_VALUE;
+    }
+
+    if (opcodeInt != DEFAULT_VALUE)
+    {
+        return ncsi::sendCommand(indexInt, packageInt, channelInt, opcodeInt,
+                                 options.payload_length, options.payload);
     }
 
     auto setCmd = (options)["set"];

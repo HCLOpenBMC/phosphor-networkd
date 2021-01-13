@@ -1,3 +1,5 @@
+#include <stdint.h>
+
 namespace phosphor
 {
 namespace network
@@ -19,6 +21,9 @@ constexpr auto NONE = 0;
  * @returns 0 on success and negative value for failure.
  */
 int setChannel(int ifindex, int package, int channel);
+
+int sendCommand(int ifindex, int package, int channel, int opcode,
+                short payload_len, uint8_t* payload);
 
 /* @brief  This function will ask underlying NCSI driver
  *         to clear any preferred setting from the given

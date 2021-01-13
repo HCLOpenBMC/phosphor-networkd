@@ -22,6 +22,18 @@ using namespace sdbusplus::xyz::openbmc_project::Common::Error;
 
 using CallBack = int (*)(struct nl_msg* msg, void* arg);
 
+struct ncsi_pkt_hdr
+{
+    unsigned char mc_id;    /* Management controller ID */
+    unsigned char revision; /* NCSI version - 0x01      */
+    unsigned char reserved; /* Reserved                 */
+    unsigned char id;       /* Packet sequence number   */
+    unsigned char type;     /* Packet type              */
+    unsigned char channel;  /* Network controller ID    */
+    __be16 length;          /* Payload length           */
+    __be32 reserved1[2];    /* Reserved                 */
+};
+
 namespace internal
 {
 
@@ -175,10 +187,54 @@ CallBack infoCallBack = [](struct nl_msg* msg, void* /*arg*/) {
     return (int)NL_SKIP;
 };
 
+CallBack dataCallBack = [](struct nl_msg* msg, void* /*arg*/) {
+    std::cerr << "dataCallBack function called..\n";
+#define ETHERNET_HEADER_SIZE 16
+
+    auto hdr = nlmsg_hdr(msg);
+    struct nlattr* tb[NCSI_ATTR_MAX + 1] = {0};
+    int rc, data_len, i;
+    char* data;
+
+	struct nla_policy ncsi_genl_policy[NCSI_ATTR_MAX + 1] = {
+        {type : NLA_UNSPEC}, {type : NLA_U32}, {type : NLA_NESTED},
+        {type : NLA_U32},    {type : NLA_U32}, {type : NLA_BINARY},
+		{type : NLA_FLAG},    {type : NLA_U32},    {type : NLA_U32}
+    };
+
+    rc = genlmsg_parse(hdr, 0, tb, NCSI_ATTR_MAX, ncsi_genl_policy);
+    if (rc)
+    {
+        fprintf(stderr, "Failed to parse ncsi cmd callback\n");
+        return rc;
+    }
+
+    data_len = nla_len(tb[NCSI_ATTR_DATA]) - ETHERNET_HEADER_SIZE;
+    data = (char*)(nla_data(tb[NCSI_ATTR_DATA])) + ETHERNET_HEADER_SIZE;
+
+    printf("NC-SI Response Payload length = %d\n", data_len);
+    printf("Response Payload:\n");
+    for (i = 0; i < data_len; ++i)
+    {
+        if (i && !(i % 4))
+            printf("\n%d: ", 16 + i);
+        printf("0x%02x ", *(data + i));
+    }
+    printf("\n");
+
+    // indicating call back has been completed
+    //*ret = 0;
+    return 0;
+};
+
 int applyCmd(int ifindex, int cmd, int package = DEFAULT_VALUE,
              int channel = DEFAULT_VALUE, int flags = NONE,
-             CallBack function = nullptr)
+             CallBack function = nullptr, uint8_t opcode = DEFAULT_VALUE,
+             short payload_len = DEFAULT_VALUE, uint8_t* payload = nullptr)
 {
+    struct ncsi_pkt_hdr* hdr;
+    uint8_t *pData, *pCtrlPktPayload;
+
     nlSocketPtr socket(nl_socket_alloc(), &::nl_socket_free);
     auto ret = genl_connect(socket.get());
     if (ret < 0)
@@ -236,6 +292,31 @@ int applyCmd(int ifindex, int cmd, int package = DEFAULT_VALUE,
         return ret;
     }
 
+    if (opcode != DEFAULT_VALUE)
+    {
+        pData = (uint8_t*)calloc(1, sizeof(struct ncsi_pkt_hdr) + payload_len);
+        if (!pData)
+        {
+            std::cerr << "Failed to allocate buffer for ctrl pkt\n";
+        }
+        // prepare buffer to be copied to netlink msg
+        hdr = (struct ncsi_pkt_hdr*)pData;
+        pCtrlPktPayload = pData + sizeof(struct ncsi_pkt_hdr);
+        memcpy(pCtrlPktPayload, payload, payload_len);
+        hdr->type = opcode;               // NC-SI command
+        hdr->length = htons(payload_len); // NC-SI command payload length
+        ret = nla_put(msg.get(), NCSI_ATTR_DATA,
+                      sizeof(struct ncsi_pkt_hdr) + payload_len, (void*)pData);
+        if (ret < 0)
+        {
+            std::cerr << "Failed to set the command NCSI_CMD_SEND_CMD , RC : "
+                      << ret << "\n";
+            return ret;
+        }
+
+		nl_socket_disable_seq_check(socket.get());
+    }
+
     if (function)
     {
         // Add a callback function to the socket
@@ -268,6 +349,19 @@ int setChannel(int ifindex, int package, int channel)
               << ", IFINDEX :  " << std::hex << ifindex << std::endl;
     return internal::applyCmd(ifindex, ncsi_nl_commands::NCSI_CMD_SET_INTERFACE,
                               package, channel);
+}
+
+int sendCommand(int ifindex, int package, int channel, int opcode,
+                short payload_len, uint8_t* payload)
+{
+    std::cout << "Send Command => Channel : " << std::hex << channel
+              << ", PACKAGE : " << std::hex << package
+              << ", IFINDEX :  " << std::hex << ifindex
+              << ", Opcode : " << std::hex << opcode
+              << ", Length : " << payload_len << std::endl;
+    return internal::applyCmd(ifindex, ncsi_nl_commands::NCSI_CMD_SEND_CMD,
+                              package, channel, NONE, internal::dataCallBack,
+                              opcode, payload_len, payload);
 }
 
 int clearInterface(int ifindex)
