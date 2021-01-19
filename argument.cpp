@@ -45,6 +45,19 @@ ArgumentParser::ArgumentParser(int argc, char** argv)
 
         if (i->val)
         {
+            if (option == 'o')
+            {
+                payload_length = argc - optind;
+                std::cerr << "Payload lenght : " << payload_length << "\n";
+
+                for (int i = 0; i < payload_length; i++)
+                {
+                    std::cerr << (int)strtoul(argv[i + optind], NULL, 0)
+                              << "\t";
+                    payload[i] = (uint8_t)strtoul(argv[i + optind], NULL, 0);
+                }
+            }
+
             arguments[i->name] = (i->has_arg ? optarg : trueString);
         }
     }
@@ -75,6 +88,7 @@ void ArgumentParser::usage(char** argv)
     std::cerr << "    --package=<package>  Specify a package.\n";
     std::cerr << "    --channel=<channel> Specify a channel.\n";
     std::cerr << "    --index=<device index> Specify device ifindex.\n";
+    std::cerr << "    --cmd=<opcode> Specify opcode.\n";
     std::cerr << std::flush;
 }
 
@@ -85,11 +99,12 @@ const option ArgumentParser::options[] = {
     {"package", required_argument, NULL, 'p'},
     {"channel", required_argument, NULL, 'c'},
     {"index", required_argument, NULL, 'x'},
+    {"cmd", required_argument, NULL, 'o'},
     {"help", no_argument, NULL, 'h'},
     {0, 0, 0, 0},
 };
 
-const char* ArgumentParser::optionStr = "i:s:r:p:c:x:h?";
+const char* ArgumentParser::optionStr = "i:s:r:p:c:x:o:h?";
 
 const std::string ArgumentParser::trueString = "true";
 const std::string ArgumentParser::emptyString = "";

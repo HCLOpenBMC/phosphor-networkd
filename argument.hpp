@@ -52,6 +52,10 @@ class ArgumentParser
     /** @brief Set to '' when an option is not passed */
     static const std::string emptyString;
 
+    uint8_t payload[2048] = {0};
+
+    short payload_length = 0;
+
   private:
     /** @brief Option to argument mapping */
     std::map<const std::string, std::string> arguments;

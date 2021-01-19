@@ -19,8 +19,23 @@ namespace ncsi
 
 using namespace phosphor::logging;
 using namespace sdbusplus::xyz::openbmc_project::Common::Error;
+#define ETHERNET_HEADER_SIZE 16
+int return_reps;
 
 using CallBack = int (*)(struct nl_msg* msg, void* arg);
+
+struct ncsi_pkt_hdr
+{
+    unsigned char mc_id;    /* Management controller ID */
+    unsigned char revision; /* NCSI version - 0x01      */
+    unsigned char reserved; /* Reserved                 */
+    unsigned char id;       /* Packet sequence number   */
+    unsigned char type;     /* Packet type              */
+    unsigned char channel;  /* Network controller ID    */
+    __be16 length;          /* Payload length           */
+    __be32 reserved1[2];    /* Reserved                 */
+};
+
 
 namespace internal
 {
@@ -28,9 +43,14 @@ namespace internal
 using nlMsgPtr = std::unique_ptr<nl_msg, decltype(&::nlmsg_free)>;
 using nlSocketPtr = std::unique_ptr<nl_sock, decltype(&::nl_socket_free)>;
 
-CallBack infoCallBack = [](struct nl_msg* msg, void* /*arg*/) {
+CallBack infoCallBack = [](struct nl_msg* msg, void* arg/*arg*/) {
     using namespace phosphor::network::ncsi;
     auto nlh = nlmsg_hdr(msg);
+	int *return_resp = (int*)arg;
+
+
+	std::cerr << "Call back function callled..\n";
+	*return_resp = 0;
 
     struct nlattr* tb[NCSI_ATTR_MAX + 1] = {nullptr};
     struct nla_policy ncsiPolicy[NCSI_ATTR_MAX + 1] = {
@@ -49,6 +69,34 @@ CallBack infoCallBack = [](struct nl_msg* msg, void* /*arg*/) {
         {type : NLA_UNSPEC}, {type : NLA_NESTED}, {type : NLA_U32},
         {type : NLA_FLAG},   {type : NLA_NESTED}, {type : NLA_UNSPEC},
     };
+
+	struct nlattr* payloadtb[NCSI_ATTR_MAX + 1] = {nullptr};
+	struct nla_policy payloadPolicy[NCSI_ATTR_MAX + 1] = {
+			{type : NLA_UNSPEC}, {type : NLA_U32}, {type : NLA_NESTED},
+        {type : NLA_U32},    {type : NLA_U32}, {type : NLA_BINARY},
+        {type : NLA_FLAG},   {type : NLA_U32}, {type : NLA_U32}};
+
+	auto rc = genlmsg_parse(nlh, 0, payloadtb, NCSI_ATTR_MAX, payloadPolicy);
+    if (rc)
+    {
+			std::cerr << "Failed to parse ncsi cmd callback\n";
+        return rc;
+    }
+
+    auto data_len = nla_len(payloadtb[NCSI_ATTR_DATA]) - ETHERNET_HEADER_SIZE;
+    auto data = (char*)(nla_data(payloadtb[NCSI_ATTR_DATA])) + ETHERNET_HEADER_SIZE;
+
+	std::cerr << "NC-SI Response Payload length = "<<  data_len <<"\n";
+    std::cerr << "Response Payload:\n";
+
+    for (auto i = 0; i < data_len; ++i)
+    {
+        if (i && !(i % 4))
+            printf("\n%d: ", 16 + i);
+        printf("0x%02x ", *(data + i));
+    }
+    printf("\n");
+
 
     auto ret = genlmsg_parse(nlh, 0, tb, NCSI_ATTR_MAX, ncsiPolicy);
     if (!tb[NCSI_ATTR_PACKAGE_LIST])
@@ -177,8 +225,13 @@ CallBack infoCallBack = [](struct nl_msg* msg, void* /*arg*/) {
 
 int applyCmd(int ifindex, int cmd, int package = DEFAULT_VALUE,
              int channel = DEFAULT_VALUE, int flags = NONE,
-             CallBack function = nullptr)
+             CallBack function = nullptr, int opcode = DEFAULT_VALUE,
+             short payload_len = DEFAULT_VALUE, uint8_t* payload = nullptr)
+
 {
+	struct ncsi_pkt_hdr* hdr;
+    uint8_t *pData, *pCtrlPktPayload;
+
     nlSocketPtr socket(nl_socket_alloc(), &::nl_socket_free);
     auto ret = genl_connect(socket.get());
     if (ret < 0)
@@ -235,12 +288,39 @@ int applyCmd(int ifindex, int cmd, int package = DEFAULT_VALUE,
                   << "INTERFACE : " << std::hex << ifindex << std::endl;
         return ret;
     }
+	
+	if (opcode != DEFAULT_VALUE)
+    {
+       std::cerr << "Debug  : Inside opcode loop\n";
+        pData = (uint8_t*)calloc(1, sizeof(struct ncsi_pkt_hdr) + payload_len);
+        if (!pData)
+        {
+            std::cerr << "Failed to allocate buffer for ctrl pkt\n";
+        }
+        // prepare buffer to be copied to netlink msg
+        hdr = (struct ncsi_pkt_hdr*)pData;
+        pCtrlPktPayload = pData + sizeof(struct ncsi_pkt_hdr);
+        memcpy(pCtrlPktPayload, payload, payload_len);
+        hdr->type = opcode;               // NC-SI command
+        hdr->length = htons(payload_len); // NC-SI command payload length
+        ret = nla_put(msg.get(), NCSI_ATTR_DATA,
+                      sizeof(struct ncsi_pkt_hdr) + payload_len, (void*)pData);
+        if (ret < 0)
+        {
+            std::cerr << "Failed to set the command NCSI_CMD_SEND_CMD , RC : "
+                      << ret << "\n";
+            return ret;
+        }
+
+        nl_socket_disable_seq_check(socket.get());
+		return_reps = 1;
+    }
 
     if (function)
     {
         // Add a callback function to the socket
         nl_socket_modify_cb(socket.get(), NL_CB_VALID, NL_CB_CUSTOM, function,
-                            nullptr);
+                            &return_reps);
     }
 
     ret = nl_send_auto(socket.get(), msg.get());
@@ -250,12 +330,15 @@ int applyCmd(int ifindex, int cmd, int package = DEFAULT_VALUE,
         return ret;
     }
 
+	while (return_reps == 1) 
+	{
     ret = nl_recvmsgs_default(socket.get());
     if (ret < 0)
     {
         std::cerr << "Failed to receive the message , RC : " << ret
                   << std::endl;
     }
+	}
     return ret;
 }
 
@@ -268,6 +351,19 @@ int setChannel(int ifindex, int package, int channel)
               << ", IFINDEX :  " << std::hex << ifindex << std::endl;
     return internal::applyCmd(ifindex, ncsi_nl_commands::NCSI_CMD_SET_INTERFACE,
                               package, channel);
+}
+
+int sendCommand(int ifindex, int package, int channel, int opcode,
+                short payload_len, uint8_t* payload)
+{
+    std::cout << "Send Command => Channel : " << std::hex << channel
+              << ", PACKAGE : " << std::hex << package
+              << ", IFINDEX :  " << std::hex << ifindex
+              << ", Opcode : " << std::hex << opcode
+              << ", Length : " << payload_len << std::endl;
+    return internal::applyCmd(ifindex, ncsi_nl_commands::NCSI_CMD_SEND_CMD,
+                              package, channel, NONE, internal::infoCallBack,
+                              opcode, payload_len, payload);
 }
 
 int clearInterface(int ifindex)
