@@ -22,6 +22,9 @@ using namespace sdbusplus::xyz::openbmc_project::Common::Error;
 
 using CallBack = int (*)(struct nl_msg* msg, void* arg);
 
+#define ETHERNET_HEADER_SIZE 16
+int return_resp;
+
 struct ncsi_pkt_hdr
 {
     unsigned char mc_id;    /* Management controller ID */
@@ -187,20 +190,19 @@ CallBack infoCallBack = [](struct nl_msg* msg, void* /*arg*/) {
     return (int)NL_SKIP;
 };
 
-CallBack dataCallBack = [](struct nl_msg* msg, void* /*arg*/) {
+CallBack dataCallBack = [](struct nl_msg* msg, void* arg) {
     std::cerr << "dataCallBack function called..\n";
-#define ETHERNET_HEADER_SIZE 16
 
     auto hdr = nlmsg_hdr(msg);
     struct nlattr* tb[NCSI_ATTR_MAX + 1] = {0};
     int rc, data_len, i;
     char* data;
+    int* return_resp = (int*)arg;
 
-	struct nla_policy ncsi_genl_policy[NCSI_ATTR_MAX + 1] = {
+    struct nla_policy ncsi_genl_policy[NCSI_ATTR_MAX + 1] = {
         {type : NLA_UNSPEC}, {type : NLA_U32}, {type : NLA_NESTED},
         {type : NLA_U32},    {type : NLA_U32}, {type : NLA_BINARY},
-		{type : NLA_FLAG},    {type : NLA_U32},    {type : NLA_U32}
-    };
+        {type : NLA_FLAG},   {type : NLA_U32}, {type : NLA_U32}};
 
     rc = genlmsg_parse(hdr, 0, tb, NCSI_ATTR_MAX, ncsi_genl_policy);
     if (rc)
@@ -223,13 +225,13 @@ CallBack dataCallBack = [](struct nl_msg* msg, void* /*arg*/) {
     printf("\n");
 
     // indicating call back has been completed
-    //*ret = 0;
+    *return_resp = 0;
     return 0;
 };
 
 int applyCmd(int ifindex, int cmd, int package = DEFAULT_VALUE,
              int channel = DEFAULT_VALUE, int flags = NONE,
-             CallBack function = nullptr, uint8_t opcode = DEFAULT_VALUE,
+             CallBack function = nullptr, int opcode = DEFAULT_VALUE,
              short payload_len = DEFAULT_VALUE, uint8_t* payload = nullptr)
 {
     struct ncsi_pkt_hdr* hdr;
@@ -314,14 +316,15 @@ int applyCmd(int ifindex, int cmd, int package = DEFAULT_VALUE,
             return ret;
         }
 
-		nl_socket_disable_seq_check(socket.get());
+        nl_socket_disable_seq_check(socket.get());
+        return_resp = 1;
     }
 
     if (function)
     {
         // Add a callback function to the socket
         nl_socket_modify_cb(socket.get(), NL_CB_VALID, NL_CB_CUSTOM, function,
-                            nullptr);
+                            &return_resp);
     }
 
     ret = nl_send_auto(socket.get(), msg.get());
@@ -331,11 +334,26 @@ int applyCmd(int ifindex, int cmd, int package = DEFAULT_VALUE,
         return ret;
     }
 
-    ret = nl_recvmsgs_default(socket.get());
-    if (ret < 0)
+    if (opcode != DEFAULT_VALUE)
     {
-        std::cerr << "Failed to receive the message , RC : " << ret
-                  << std::endl;
+        while (return_resp == 1)
+        {
+            ret = nl_recvmsgs_default(socket.get());
+            if (ret < 0)
+            {
+                std::cerr << "Failed to receive the message , RC : " << ret
+                          << std::endl;
+            }
+        }
+    }
+    else
+    {
+        ret = nl_recvmsgs_default(socket.get());
+        if (ret < 0)
+        {
+            std::cerr << "Failed to receive the message , RC : " << ret
+                      << std::endl;
+        }
     }
     return ret;
 }
