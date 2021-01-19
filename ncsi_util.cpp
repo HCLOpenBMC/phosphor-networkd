@@ -191,8 +191,6 @@ CallBack infoCallBack = [](struct nl_msg* msg, void* /*arg*/) {
 };
 
 CallBack dataCallBack = [](struct nl_msg* msg, void* arg) {
-    std::cerr << "dataCallBack function called..\n";
-
     auto hdr = nlmsg_hdr(msg);
     struct nlattr* tb[NCSI_ATTR_MAX + 1] = {0};
     int rc, data_len, i;
@@ -207,22 +205,26 @@ CallBack dataCallBack = [](struct nl_msg* msg, void* arg) {
     rc = genlmsg_parse(hdr, 0, tb, NCSI_ATTR_MAX, ncsi_genl_policy);
     if (rc)
     {
-        fprintf(stderr, "Failed to parse ncsi cmd callback\n");
+			std::cerr << "Failed to parse ncsi cmd callback\n";
         return rc;
     }
 
-    data_len = nla_len(tb[NCSI_ATTR_DATA]) - ETHERNET_HEADER_SIZE;
-    data = (char*)(nla_data(tb[NCSI_ATTR_DATA])) + ETHERNET_HEADER_SIZE;
+    //data_len = nla_len(tb[NCSI_ATTR_DATA]) - ETHERNET_HEADER_SIZE;
+    //data = (char*)(nla_data(tb[NCSI_ATTR_DATA])) + ETHERNET_HEADER_SIZE;
+    data_len = nla_len(tb[NCSI_ATTR_DATA]);
+    data = (char*)(nla_data(tb[NCSI_ATTR_DATA]));
 
-    printf("NC-SI Response Payload length = %d\n", data_len);
-    printf("Response Payload:\n");
+	std::cerr << "NC-SI Response Payload length = "<< data_len <<"\n";
+	std::cerr << "Response Payload:\n0: ";
     for (i = 0; i < data_len; ++i)
     {
         if (i && !(i % 4))
-            printf("\n%d: ", 16 + i);
+		{
+				std::cerr << "\n" << i <<": ";
+		}
         printf("0x%02x ", *(data + i));
     }
-    printf("\n");
+	std::cerr <<"\n";
 
     // indicating call back has been completed
     *return_resp = 0;
